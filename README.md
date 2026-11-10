@@ -3,10 +3,11 @@ Basic repository for Red Discord Bot Cogs (plugins)
 [p]repo add acg-cogs https://github.com/ArmchairGuru/acg-cogs   
 [p]cog install acg-cogs cogname  
   
-<B>Streamwatch</B> - Checks discord members using presence to see if they started a live stream.  
+<B>Streamwatch</B> - Checks discord members using presence to see if they started a live stream on Twitch.tv.  
 The cog tracks who is currently live in memory, so changing a stream title or game doesn’t trigger a second announcement.  
 When someone goes live it posts an embed to a specified announcement channel and, if you’ve set one, gives them a live role. The role is removed when they stop.  
+@everyone can also be set enabled or disabled.
   
 <B>Notes:  
-- Discord only reports streaming status for users who have linked Twitch or YouTube in their connections and have “Display on profile” enabled.  
-- Youtube will sometimes reconnect a stream in the background causing Discord presence to believe a new stream has started. A 3 hour check exists to stop reposts within that time frame.</B>
+- Discord only reports streaming status for users who have linked Twitch in their connections and have “Display on profile” enabled.  
+</B>
