@@ -7,6 +7,6 @@
   "install_msg": "Thanks for installing StreamWatch! Enable the Presence and Server Members intents, then use `[p]streamwatch` to configure.",
   "min_bot_version": "3.5.0",
   "requirements": [],
-  "tags": ["streaming", "twitch", "youtube", "presence"],
+  "tags": ["streaming", "twitch", "presence"],
   "type": "COG"
 }
