@@ -1,16 +1,16 @@
 from types import SimpleNamespace
 from typing import Optional
 
-import time
 import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
 STREAM_GRACE_SECONDS = 10800  # a gap shorter than this counts as a reconnect, not a new stream
-_last_stream_seen = {}      # member.id -> timestamp of the last streaming presence update
+_last_stream_announced = {}   # member.id -> timestamp of the last go-live announcement
+
 
 class StreamWatch(commands.Cog):
-    """Detects when members start/stop streaming (Activity type 1)."""
+    """Detects when members start/stop streaming on Twitch (Activity type 1)."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -25,22 +25,48 @@ class StreamWatch(commands.Cog):
             ping_everyone=False,  # mention @everyone in go-live announcements
             ping_role=None,       # optional role id to mention in go-live announcements
         )
-        # (guild_id, user_id) of members currently known to be live.
+        # (guild_id, user_id) of members currently known to be live on Twitch.
         # Prevents re-announcing when stream title/game changes.
         self._live: set = set()
 
     # ------------------------------------------------------------------ helpers
 
     @staticmethod
-    def get_stream(member: discord.Member) -> Optional[discord.Streaming]:
-        """Look through member.activities for an activity with type == 1 (streaming)."""
+    def _is_twitch(activity) -> bool:
+        """True only for Twitch streams. Uses the platform name, falling back to the URL."""
+        platform = (getattr(activity, "platform", None) or "").lower()
+        if platform:
+            return platform == "twitch"
+        url = (getattr(activity, "url", None) or "").lower()
+        return "twitch.tv/" in url
+
+    @classmethod
+    def get_stream(cls, member: discord.Member) -> Optional[discord.Streaming]:
+        """Look through member.activities for a Twitch activity with type == 1 (streaming).
+        Streams on any other platform (e.g. YouTube) are ignored."""
         for activity in member.activities:
-            if activity.type is discord.ActivityType.streaming:  # value 1
+            if (
+                activity.type is discord.ActivityType.streaming  # value 1
+                and getattr(activity, "url", None)
+                and cls._is_twitch(activity)
+            ):
                 return activity
         return None
 
     @staticmethod
-    def _build_announcement(member, stream, now: float):
+    def _twitch_name(stream) -> Optional[str]:
+        """Get the Twitch channel name from the activity assets or the stream URL."""
+        name = getattr(stream, "twitch_name", None)
+        if name:
+            return name
+        url = stream.url or ""
+        if "twitch.tv/" in url:
+            name = url.split("twitch.tv/")[-1].split("?")[0].strip("/").split("/")[0]
+            return name or None
+        return None
+
+    @classmethod
+    def _build_announcement(cls, member, stream, now: float):
         """Build the go-live embed + Watch Stream button.
         Shared by real go-live events and the test command."""
         embed = discord.Embed(
@@ -49,28 +75,21 @@ class StreamWatch(commands.Cog):
             colour=discord.Colour.purple(),
         )
         embed.set_author(
-            name=f"{member.display_name} is now live!",
+            name=f"{member.display_name} is now live on Twitch!",
             url=stream.url,
             icon_url=member.display_avatar.url,
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         if stream.game:
             embed.add_field(name="Playing", value=stream.game, inline=True)
-        if stream.platform:
-            embed.add_field(name="Platform", value=stream.platform, inline=True)
+        embed.add_field(name="Platform", value="Twitch", inline=True)
 
-        # Live stream preview
-        cache_bust = int(now)
-        twitch_name = getattr(stream, "twitch_name", None)
-        if not twitch_name and stream.url and "twitch.tv/" in stream.url:
-            twitch_name = stream.url.rstrip("/").split("/")[-1]
+        # Live stream preview (cache-busted so Discord fetches a fresh frame)
+        twitch_name = cls._twitch_name(stream)
         if twitch_name:
             embed.set_image(
-                url=f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{twitch_name.lower()}-1280x720.jpg?t={cache_bust}"
+                url=f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{twitch_name.lower()}-1280x720.jpg?t={int(now)}"
             )
-        elif stream.url and "v=" in stream.url:
-            video_id = stream.url.split("v=")[-1].split("&")[0]
-            embed.set_image(url=f"https://i.ytimg.com/vi/{video_id}/maxresdefault_live.jpg?t={cache_bust}")
 
         view = discord.ui.View()
         view.add_item(
@@ -113,7 +132,7 @@ class StreamWatch(commands.Cog):
             return
 
         key = (guild.id, after.id)
-        stream = self.get_stream(after)
+        stream = self.get_stream(after)  # None unless the member is streaming on Twitch
 
         if stream and key not in self._live:
             self._live.add(key)
@@ -128,7 +147,7 @@ class StreamWatch(commands.Cog):
         role = guild.get_role(settings["live_role"]) if settings["live_role"] else None
         if role and guild.me.guild_permissions.manage_roles:
             try:
-                await member.add_roles(role, reason="Started streaming")
+                await member.add_roles(role, reason="Started streaming on Twitch")
             except discord.HTTPException:
                 pass
 
@@ -136,10 +155,10 @@ class StreamWatch(commands.Cog):
         if not channel or not channel.permissions_for(guild.me).send_messages:
             return
 
-        # Stop duplicate announcements caused by YouTube reconnecting a stream
+        # Stop duplicate announcements caused by a stream dropping and reconnecting
         now = discord.utils.utcnow().timestamp()
-        last_seen = _last_stream_seen.get(member.id)
-        _last_stream_seen[member.id] = now
+        last_seen = _last_stream_announced.get(member.id)
+        _last_stream_announced[member.id] = now
         if last_seen is not None and (now - last_seen) < STREAM_GRACE_SECONDS:
             return
 
@@ -151,7 +170,7 @@ class StreamWatch(commands.Cog):
         role = member.guild.get_role(settings["live_role"]) if settings["live_role"] else None
         if role and role in member.roles and member.guild.me.guild_permissions.manage_roles:
             try:
-                await member.remove_roles(role, reason="Stopped streaming")
+                await member.remove_roles(role, reason="Stopped streaming on Twitch")
             except discord.HTTPException:
                 pass
 
@@ -160,19 +179,19 @@ class StreamWatch(commands.Cog):
     @commands.command()
     @commands.guild_only()
     async def isstreaming(self, ctx: commands.Context, member: Optional[discord.Member] = None):
-        """Check whether a member is currently streaming."""
+        """Check whether a member is currently streaming on Twitch."""
         member = member or ctx.author
         stream = self.get_stream(member)
         if stream:
-            await ctx.send(f"🔴 **{member.display_name}** is streaming: {stream.url}")
+            await ctx.send(f"🔴 **{member.display_name}** is streaming on Twitch: {stream.url}")
         else:
-            await ctx.send(f"⚫ **{member.display_name}** is not streaming.")
+            await ctx.send(f"⚫ **{member.display_name}** is not streaming on Twitch.")
 
     @commands.group()
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def streamwatch(self, ctx: commands.Context):
-        """Configure StreamWatch."""
+        """Configure StreamWatch (Twitch only)."""
 
     @streamwatch.command(name="toggle")
     async def sw_toggle(self, ctx: commands.Context):
@@ -223,10 +242,10 @@ class StreamWatch(commands.Cog):
 
     @streamwatch.command(name="test")
     async def sw_test(self, ctx: commands.Context, url: Optional[str] = None):
-        """Post a fake go-live announcement to test the embed.
+        """Post a fake Twitch go-live announcement to test the embed.
 
-        Usage: [p]streamwatch test [stream url]
-        Defaults to a Twitch URL. Pass a YouTube watch?v= URL to test the YouTube preview.
+        Usage: [p]streamwatch test [twitch url]
+        Defaults to https://www.twitch.tv/twitch.
         Posts to the configured announcement channel, or the current channel if none is set.
         Ignores the enabled toggle, the reconnect guard and the live role.
         Shows the configured ping text but never actually notifies anyone.
@@ -237,14 +256,15 @@ class StreamWatch(commands.Cog):
             return await ctx.send("I can't send messages in the announcement channel.")
 
         url = url or "https://www.twitch.tv/twitch"
-        platform = "YouTube" if ("youtube.com" in url or "youtu.be" in url) else "Twitch"
+        if "twitch.tv/" not in url.lower():
+            return await ctx.send("Please provide a Twitch URL, e.g. `https://www.twitch.tv/yourname`.")
 
         # Stand-in for discord.Streaming with the same attributes the embed uses
         fake_stream = SimpleNamespace(
             name="Test Stream",
             details="This is a test announcement",
             game="Just Chatting",
-            platform=platform,
+            platform="Twitch",
             url=url,
             twitch_name=None,
         )
