@@ -5,9 +5,6 @@ import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
-STREAM_GRACE_SECONDS = 10800  # a gap shorter than this counts as a reconnect, not a new stream
-_last_stream_announced = {}   # member.id -> timestamp of the last go-live announcement
-
 
 class StreamWatch(commands.Cog):
     """Detects when members start/stop streaming on Twitch (Activity type 1)."""
@@ -155,13 +152,7 @@ class StreamWatch(commands.Cog):
         if not channel or not channel.permissions_for(guild.me).send_messages:
             return
 
-        # Stop duplicate announcements caused by a stream dropping and reconnecting
         now = discord.utils.utcnow().timestamp()
-        last_seen = _last_stream_announced.get(member.id)
-        _last_stream_announced[member.id] = now
-        if last_seen is not None and (now - last_seen) < STREAM_GRACE_SECONDS:
-            return
-
         embed, view = self._build_announcement(member, stream, now)
         content, mentions = self._build_ping(guild, settings)
         await channel.send(content=content, embed=embed, view=view, allowed_mentions=mentions)
@@ -247,7 +238,7 @@ class StreamWatch(commands.Cog):
         Usage: [p]streamwatch test [twitch url]
         Defaults to https://www.twitch.tv/twitch.
         Posts to the configured announcement channel, or the current channel if none is set.
-        Ignores the enabled toggle, the reconnect guard and the live role.
+        Ignores the enabled toggle and the live role.
         Shows the configured ping text but never actually notifies anyone.
         """
         settings = await self.config.guild(ctx.guild).all()
